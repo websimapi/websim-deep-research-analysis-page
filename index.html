@@ -1,0 +1,138 @@
+<!-- ...existing head and body content... -->
+
+<body>
+  <!-- ...existing page content... -->
+
+  <!-- Deep Research & Analysis Section -->
+  <section id="deep-analysis" style="margin:2em 0; padding:1em; border:1px solid #ccc; border-radius:4px;">
+    <h2>Deep Research & Analysis</h2>
+    <button id="analyzeBtn" style="padding:0.5em 1em; font-size:1em;">Start Deep Research</button>
+    <p id="status" style="margin-top:1em; color:#555;"></p>
+    <div id="results" style="margin-top:1em;"></div>
+    <button id="suggestBtn" style="display:none; margin-top:1em; padding:0.5em 1em; font-size:1em;">Ask LLM for Suggestions</button>
+  </section>
+
+  <!-- ...existing scripts... -->
+
+  <script>
+    // Fetch paginated data from any endpoint under /api/v1/
+    async function fetchAll(endpoint) {
+      let items = [];
+      let after = null;
+      do {
+        const url = new URL(`/api/v1/${endpoint}`, window.location.origin);
+        url.searchParams.set('first', 100);
+        if (after) url.searchParams.set('after', after);
+        const resp = await fetch(url.href);
+        if (!resp.ok) throw new Error(`Error fetching ${endpoint}: ${resp.statusText}`);
+        const data = await resp.json();
+        const key = Object.keys(data)[0];         // e.g. "projects" or "likes"
+        const page = data[key];
+        items.push(...(page.data || []));
+        after = page.meta?.has_next_page ? page.meta.end_cursor : null;
+        document.getElementById('status').textContent = `Fetched ${items.length} ${endpoint}`;
+      } while (after);
+      return items;
+    }
+
+    // Simple scoring: sum of available stats, fallback to 1
+    function computeScore(record) {
+      const stats = (record.project?.stats) || record.stats || {};
+      return (stats.likes || 0) + (stats.views || 0) + (stats.comments || 0) || 1;
+    }
+
+    // Ask the LLM to analyze a small chunk of records
+    async function analyzeChunk(chunk) {
+      const messages = [
+        { role: "system", content: "You are an AI assistant analyzing user records for key insights." },
+        { role: "user", content: "Analyze these records and summarize the top insights:\n" + JSON.stringify(chunk, null, 2) }
+      ];
+      const res = await window.websim.chat.completions.create({ messages });
+      return res.content;
+    }
+
+    // Entry point: fetch user history, compute scores, batch-analyze, store & render
+    async function deepAnalyze() {
+      const statusEl = document.getElementById('status');
+      statusEl.textContent = 'Starting deep research...';
+      try {
+        const user = await window.websim.getCurrentUser();
+        const name = user.username;
+        statusEl.textContent = `Fetching projects for "${name}"...`;
+        const rawProjects = await fetchAll(`users/${name}/projects`);
+        statusEl.textContent = `Fetching likes for "${name}"...`;
+        const rawLikes = await fetchAll(`users/${name}/likes`);
+
+        // Build unified record list
+        const records = [];
+        rawProjects.forEach(item =>
+          records.push({
+            type: 'project',
+            id: item.project.id,
+            title: item.project.title,
+            stats: item.project.stats,
+            score: computeScore(item)
+          })
+        );
+        rawLikes.forEach(item => {
+          const p = item.project;
+          records.push({
+            type: 'liked_project',
+            id: p.id,
+            title: p.title,
+            stats: p.stats,
+            score: computeScore(item)
+          });
+        });
+
+        statusEl.textContent = `Analyzing ${records.length} records in batches...`;
+        const analyses = [];
+        const chunkSize = 5;
+        for (let i = 0; i < records.length; i += chunkSize) {
+          const chunk = records.slice(i, i + chunkSize);
+          statusEl.textContent = `Analyzing records ${i + 1}–${Math.min(i + chunkSize, records.length)}...`;
+          const analysis = await analyzeChunk(chunk);
+          analyses.push({ chunk, analysis });
+        }
+
+        // Persist to localStorage
+        localStorage.setItem('analysisResults', JSON.stringify(analyses));
+        statusEl.textContent = 'Deep research complete.';
+
+        // Render analyses
+        const resultsEl = document.getElementById('results');
+        resultsEl.innerHTML = analyses.map((a, idx) =>
+          `<h4>Batch ${idx + 1} Insights</h4><pre style="background:#f7f7f7; padding:1em; border-radius:4px;">${a.analysis}</pre>`
+        ).join('');
+
+        // Reveal suggestion button
+        document.getElementById('suggestBtn').style.display = 'inline-block';
+      } catch (err) {
+        statusEl.textContent = `Error: ${err.message}`;
+        console.error(err);
+      }
+    }
+
+    // Ask LLM to propose top ideas based on the stored analyses
+    async function getSuggestions() {
+      const analyses = JSON.parse(localStorage.getItem('analysisResults') || '[]');
+      if (!analyses.length) {
+        return alert('No analysis data found. Please run Deep Research first.');
+      }
+      const messages = [
+        { role: "system", content: "You are an AI assistant helping a user choose top project ideas based on prior analyses." },
+        { role: "user", content: "Based on these batch analyses, please suggest the top 5 ideas for me to work on:\n" + JSON.stringify(analyses, null, 2) }
+      ];
+      const res = await window.websim.chat.completions.create({ messages });
+      const suggestion = res.content;
+      const resultsEl = document.getElementById('results');
+      resultsEl.innerHTML += `<h3>LLM Recommendations</h3><pre style="background:#eef; padding:1em; border-radius:4px;">${suggestion}</pre>`;
+    }
+
+    document.getElementById('analyzeBtn').addEventListener('click', deepAnalyze);
+    document.getElementById('suggestBtn').addEventListener('click', getSuggestions);
+  </script>
+
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"4c6229722a6346bc8eb5cb0e5eae5d41","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+
